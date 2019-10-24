@@ -3,20 +3,19 @@ import sys
 import ftd2xx as ftd
 import logging
 import threading
+from threading import Lock
 import time
 from enum import Enum
-
+rs ={}
 class resetState( Enum ):
     INIT  = 0
     RESET = 1
     SET   = 2
 
-    rs = None
-
-
 def init_reseter():
     rs = FTReseter()
     rs.init()
+    rs.reseterTHD.join()
 
 class FTReseter:
     """ FTReseter class...."""
@@ -24,27 +23,49 @@ class FTReseter:
     state = resetState.INIT
     trigger = False
     reset_period = 10 # seconds
-    reset_dwell  = 100 # milliseconds
+    reset_dwell  = 0.100 # milliseconds
+    reseterTHD = None
+    lock =Lock()
 
-    sm = None #state machine state variable
+    OP = 0x01            # Bit mask for output D0
+
+    #global.sm = None #state machine state variable
 
     def __init__(self):
         """ Constructor goes here """
-        self.state = resetState.INIT
-        self.trigger = False
-        self.sm = {  resetState.INIT: FTReseter.init,
-                resetState.RESET: FTReseter.reset,
-                resetState.SET:   FTReseter.set
-         }
-        #logging.basicConfig(format=format, level=logging.INFO, datefmt="%H:%M:%S")
+        #self.lock = Lock()
+        logging.basicConfig(filename = 'ex.log', level=logging.DEBUG, format= '%(asctime)s %(message)s',  datefmt='%m/%d/%Y %I:%M:%S %p')
         print("__init__")
 
     def set_period (self, p):
-        self.reset_period = p
+        self.lock.acquire()
+        try:
+            self.reset_period = p
+        finally:
+            self.lock.release()
 
     def set_dwell(self, d):
-        self.reset_dwell = d
+        self.lock.acquire()
+        try:
+            self.reset_dwell = d
+        finally:
+            self.lock.release()
 
+    def get_period(self):
+        self.lock.acquire()
+        try:
+            p =self.reset_period 
+        finally:
+            self.lock.release()
+        return p
+
+    def get_dwell(self):
+        self.lock.acquire()
+        try:
+            d =self.reset_dwell
+        finally:
+            self.lock.release()        
+        return d
 
     def init(self):
         # init initialise the output pins 
@@ -66,33 +87,49 @@ class FTReseter:
             self.device.write(str(0))      # Set output low
         except:
             logging.info("Exception")
-            self.state = resetState.INIT
+            state = resetState.INIT
             if self.device is not None:
                 self.device.close()
         else:
-            self.state = resetState.SET    
-            self.device.close()
-        time.sleep(2)
-        return    
+            state = resetState.SET    
+            self.reseterTHD = threading.Thread(target = reseter_state_machine_run ,args = (self,) )
+            self.reseterTHD.start()
+        
+        return state    
 
     def reset(self):
         self.device.write(str(0))      # Set output low
-        time.sleep(0.05) # pull reset low for 50 ms
+        time.sleep(self.get_dwell())   # pull reset low for say 50 ms
+        self.device.write( str(self.OP))    # set reset pin high 
         logging.info("reset.")
         #reset
 
-        self.state = resetState.Set   
-        time.sleep(2)
-        return
+        self.state = resetState.SET
+        return resetState.SET
 
     def set(self):        
-        self.device.write(str(OP))     # Set output high
+        self.device.write(str(self.OP))     # Set output high
         logging.info("set.")
-        if self.trigger:  
-            self.state = resetState.RESET
-        
-    def reseter_state_machine_run(self):
-        logging.info("reseter_state_machine_run")
+        time.sleep(self.get_period() - self.get_dwell()) 
+        return resetState.RESET
+
+
+state = resetState.INIT
+        #self.trigger = False
+
+def reseter_state_machine_run(self):
+    logging.info("reseter_state_machine_run")
+    rs = self
+    sm = {  resetState.INIT: rs.init,
+            resetState.RESET: rs.reset,
+            resetState.SET:   rs.set
+        }
+    state = resetState.RESET
+    while True:
+       
+        state = sm[state]()
+        time.sleep(1)
+        print ( "Sleeping!")
 
 
 
